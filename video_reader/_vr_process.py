@@ -28,16 +28,24 @@ signal.signal(signal.SIGUSR1, _handle_sigusr1)
 def _reader_process(path: Path, kwargs: dict, shm_name: str, frame_shape: tuple,
                     dtype: str, request_queue: Queue, response_queue: Queue):
     import os
-    from decord import VideoReader, gpu, cpu
+    from . import config
+    if config.backend == "decord":
 
-    os.environ["DECORD_EOF_RETRY_MAX"] = "128"
-    # os.environ[
-    #     "LD_PRELOAD"
-    # ] = "/usr/lib/x86_64-linux-gnu/libcuda.so:/usr/lib/x86_64-linux-gnu/libnvcuvid.so:$LD_PRELOAD"
+        from decord import VideoReader, gpu, cpu
 
-    vr = VideoReader(str(path), ctx=gpu(0))
-    vr[slice(0, 1)].asnumpy()
-    vr.seek(0)
+        os.environ["DECORD_EOF_RETRY_MAX"] = "128"
+        # os.environ[
+        #     "LD_PRELOAD"
+        # ] = "/usr/lib/x86_64-linux-gnu/libcuda.so:/usr/lib/x86_64-linux-gnu/libnvcuvid.so:$LD_PRELOAD"
+
+        vr = VideoReader(str(path), ctx=gpu(0))
+        vr[slice(0, 1)].asnumpy()
+        vr.seek(0)
+    else:
+        from ._pyav_video_reader import VideoHandler
+
+        vr = VideoHandler(path)
+
     dtype = np.dtype(dtype)
 
     shm = SharedMemory(name=shm_name)

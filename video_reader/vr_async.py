@@ -15,7 +15,13 @@ import signal
 import threading
 
 import numpy as np
-from decord import VideoReader
+try:
+    from decord import VideoReader
+except ImportError:
+    VideoReader = None
+
+from . import VideoHandler, av
+
 from _vr_process import _reader_process
 
 mp_ctx = multiprocessing.get_context("spawn")
