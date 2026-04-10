@@ -498,7 +498,7 @@ class VideoHandler(BaseAudioVideo):
 
         # Return both
         return (
-            self.current_frame.to_ndarray(format="rgb24")[::-1] / 255.0
+            self.current_frame.to_ndarray(format="yuv420p")
             if self.return_frame_array
             else self.current_frame,
             self.last_loaded_idx,
@@ -534,7 +534,7 @@ class VideoHandler(BaseAudioVideo):
 
         if idx == self.last_loaded_idx:
             return (
-                self.current_frame.to_ndarray(format="rgb24")[::-1] / 255.0
+                self.current_frame.to_ndarray(format="yuv420p")
                 if self.return_frame_array
                 else self.current_frame
             )
@@ -556,7 +556,7 @@ class VideoHandler(BaseAudioVideo):
             self.current_frame = preceding_frame
 
         return (
-            self.current_frame.to_ndarray(format="rgb24")[::-1] / 255.0
+            self.current_frame.to_ndarray(format="yuv420p")
             if self.return_frame_array
             else self.current_frame
         )
@@ -694,7 +694,7 @@ class VideoHandler(BaseAudioVideo):
 
     def _append_frame(self, frames, idx, frame):
         if self.return_frame_array:
-            frames[idx] = frame.to_ndarray(format="rgb24")[::-1] / 255.0
+            frames[idx] = frame.to_ndarray(format="yuv420p")
         else:
             frames.append(frame)
 
