@@ -47,7 +47,7 @@ class AsyncVideoReader:
             frame0 = vr[10].asnumpy()
             vr.seek(0)
         else:
-            vr = VideoHandler(self._path)
+            vr = VideoHandler(self._path, pixel_format="rgb24")
             frame0 = vr[0]
 
         self._shape = (len(vr), *frame0.shape)

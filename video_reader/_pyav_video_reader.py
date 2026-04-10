@@ -11,7 +11,7 @@ import threading
 import time
 import warnings
 from contextlib import contextmanager
-from typing import List, Optional, Tuple
+from typing import Callable, List, Literal, Optional, Tuple
 try:
     import av
 except ImportError:
@@ -127,9 +127,10 @@ class VideoHandler(BaseAudioVideo):
     time :
         Experimental timestamps for each frame (seconds). If ``None``, a
         uniform grid is generated from the stream's average rate.
-    return_frame_array :
-        If ``True`` (default), return frames as ``np.ndarray`` (RGB, float32 in ``[0, 1]``);
-        otherwise return `av.VideoFrame` instances.
+    pixel_format :
+        PyAV pixel format string for decoded frames. Supported values are
+        ``"rgb24"`` (default) and ``"yuv420p"``. Pass ``None`` to skip
+        conversion and return raw `av.VideoFrame` instances.
 
     Examples
     --------
@@ -154,12 +155,12 @@ class VideoHandler(BaseAudioVideo):
         video_path: str | pathlib.Path,
         stream_index: int = 0,
         time: Optional[NDArray] = None,
-        return_frame_array: bool = True,
+        pixel_format: Literal["rgb24", "yuv420p"] | None = "rgb24",
     ) -> None:
         super().__init__(video_path)
         self.stream = self.container.streams.video[stream_index]
         self.stream_index = stream_index
-        self.return_frame_array = return_frame_array
+        self.pixel_format = pixel_format
 
 
         # default to linspace
@@ -498,8 +499,8 @@ class VideoHandler(BaseAudioVideo):
 
         # Return both
         return (
-            self.current_frame.to_ndarray(format="yuv420p")
-            if self.return_frame_array
+            self.current_frame.to_ndarray(format=self.pixel_format)
+            if self.pixel_format is not None
             else self.current_frame,
             self.last_loaded_idx,
         )
@@ -516,8 +517,9 @@ class VideoHandler(BaseAudioVideo):
         Returns
         -------
         :
-            If ``return_frame_array`` is ``True``, returns an array with shape
-            ``(H, W, 3)`` (RGB, float32 in ``[0, 1]``). Otherwise returns an
+            If ``pixel_format`` is not ``None``, returns a ``np.ndarray``
+            with shape matching the format (e.g. ``(H, W, 3)`` for ``"rgb24"``
+            or ``(H*3//2, W)`` for ``"yuv420p"``). Otherwise returns an
             `av.VideoFrame`.
 
         Notes
@@ -534,8 +536,8 @@ class VideoHandler(BaseAudioVideo):
 
         if idx == self.last_loaded_idx:
             return (
-                self.current_frame.to_ndarray(format="yuv420p")
-                if self.return_frame_array
+                self.current_frame.to_ndarray(format=self.pixel_format)
+                if self.pixel_format is not None
                 else self.current_frame
             )
 
@@ -556,8 +558,8 @@ class VideoHandler(BaseAudioVideo):
             self.current_frame = preceding_frame
 
         return (
-            self.current_frame.to_ndarray(format="yuv420p")
-            if self.return_frame_array
+            self.current_frame.to_ndarray(format=self.pixel_format)
+            if self.pixel_format is not None
             else self.current_frame
         )
 
@@ -642,6 +644,17 @@ class VideoHandler(BaseAudioVideo):
         )
 
     @property
+    def _frame_shape(self) -> Tuple[int, ...]:
+        """Per-frame array shape for the chosen pixel format."""
+        h, w = self.stream.height, self.stream.width
+        if self.pixel_format == "rgb24":
+            return (h, w, 3)
+        elif self.pixel_format == "yuv420p":
+            return (h * 3 // 2, w)
+        else:
+            raise ValueError(f"Unsupported pixel_format: {self.pixel_format!r}")
+
+    @property
     def index(self) -> NDArray:
         """
         Time index in seconds corresponding to frames.
@@ -693,8 +706,8 @@ class VideoHandler(BaseAudioVideo):
             return slice(start, start + 1)
 
     def _append_frame(self, frames, idx, frame):
-        if self.return_frame_array:
-            frames[idx] = frame.to_ndarray(format="yuv420p")
+        if self.pixel_format is not None:
+            frames[idx] = frame.to_ndarray(format=self.pixel_format)
         else:
             frames.append(frame)
 
@@ -710,10 +723,10 @@ class VideoHandler(BaseAudioVideo):
         num_frames = len(indices)
         time_threshold_all = self.round_fn(indices)
 
-        if self.return_frame_array:
+        if self.pixel_format is not None:
             frames = np.empty(
-                (num_frames, self.shape[2], self.shape[1], 3),
-                dtype=np.float32,
+                (num_frames, *self._frame_shape),
+                dtype=np.uint8,
             )
         else:
             frames = []
@@ -796,7 +809,10 @@ class VideoHandler(BaseAudioVideo):
 
         return indices[-1], frames, last_frame
 
-    def __getitem__(self, idx: slice | int) -> NDArray | av.VideoFrame | List[av.VideoFrame]:
+    def __getitem__(
+        self,
+        idx: int | slice | Tuple[int | slice, *Tuple[slice, ...]],
+    ) -> NDArray | av.VideoFrame | List[av.VideoFrame]:
         """
         Get item for video frame.
 
@@ -805,24 +821,38 @@ class VideoHandler(BaseAudioVideo):
         Parameters
         ----------
         idx:
-            The index for slicing, can be a slice or a integer.
+            The index for slicing. Can be:
+
+            - ``int``: a single frame index.
+            - ``slice``: a range of frame indices.
+            - ``tuple[int | slice, *tuple[slice, ...]]``: the first element
+              selects frames; the remaining elements are optional spatial
+              slices ``(height, width, channel)`` applied to the decoded
+              array after decoding. Decoding always uses the full spatial
+              extent; the spatial slices are cheap numpy views.
 
         Returns
         -------
         ndarray or av.VideoFrame or list[av.VideoFrame]
-            - If indexing with an ``int``:
-              returns a single frame (array or `av.VideoFrame`).
-            - If indexing with a ``slice``:
-              returns a stack of frames as ``ndarray`` with shape
-              ``(n_frames, height, width, 3)`` when ``return_frame_array`` is ``True``,
-              otherwise a ``list[av.VideoFrame]``.
+            - ``int`` → single frame ``(height, width, 3)``.
+            - ``slice`` → ``(n_frames, height, width, 3)`` array or
+              ``list[av.VideoFrame]``.
+            - ``tuple`` → same as above with spatial slices applied.
         """
+        # Unpack tuple: first element is time, rest are spatial slices
+        spatial_idx: Tuple[slice, ...] | None = None
+        if isinstance(idx, tuple):
+            spatial_idx = idx[1:] if len(idx) > 1 else None
+            idx = idx[0]
+
+        time_is_int = isinstance(idx, int)
+
         if isinstance(idx, slice):
             # Fill in missing slice components
             start = idx.start or 0
             if start >= self.shape[0]:
-                if self.return_frame_array:
-                    return np.empty((0, self.shape[2], self.shape[1], 3))
+                if self.pixel_format is not None:
+                    return np.empty((0, *self._frame_shape), dtype=np.uint8)
                 else:
                     return []
             stop = idx.stop if idx.stop is not None else self.shape[0]
@@ -855,7 +885,10 @@ class VideoHandler(BaseAudioVideo):
                 if len(frames):
                     self.last_loaded_idx = frame_idx
                     self.current_frame = last_frame
-                return frames if not revert else frames[::-1]
+                frames = frames if not revert else frames[::-1]
+                if spatial_idx is not None and isinstance(frames, np.ndarray):
+                    frames = frames[(slice(None), *spatial_idx)]
+                return frames
 
         # Default case: single index
         with self._set_get_from_index(True):
@@ -871,6 +904,15 @@ class VideoHandler(BaseAudioVideo):
                     frame = np.expand_dims(frame, axis=0)
                 else:
                     frame = [frame]
+
+        # Apply spatial slices (height, width, channel) after decoding.
+        # For a single frame (H, W, 3) index directly; for a stack
+        # (N, H, W, 3) prepend a full-axis slice to keep the time dimension.
+        if spatial_idx is not None and isinstance(frame, np.ndarray):
+            if time_is_int:
+                frame = frame[spatial_idx]
+            else:
+                frame = frame[(slice(None), *spatial_idx)]
 
         return frame
 
